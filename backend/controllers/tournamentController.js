@@ -69,6 +69,7 @@ const getTournamentResultsByDate = async (req, res) => {
 };
 
 // 4. KURA ÇEKİMİ (Zıt Kutuplu Matchmaking Algoritması)
+// 4. KURA ÇEKİMİ (Zıt Kutuplu ve Rastgele Havuzlu Matchmaking Algoritması)
 const drawTeams = async (req, res) => {
     try {
         const { playerIds, league } = req.body; // O gün oynayacak kişilerin ID'leri: [1, 2, 3, 4]
@@ -81,7 +82,7 @@ const drawTeams = async (req, res) => {
             return res.status(400).json({ error: 'Lütfen bir lig seçin.' });
         }
 
-        // 1. Adım: Seçilen oyuncuların ortalamalarını al ve sırala (En iyi oyuncu en üstte)
+        // 1. Adım: Seçilen oyuncuların ortalamalarını al ve sırala (En iyi oyuncu en üstte - DESC)
         // COALESCE(AVG(score), 0) -> Eğer oyuncu ilk defa oynuyorsa ortalaması 0 sayılır.
         const playersQuery = `
             SELECT p.id, p.name, COALESCE(AVG(tr.score), 0) as avg_score
@@ -94,22 +95,30 @@ const drawTeams = async (req, res) => {
         const playersRes = await db.query(playersQuery, [playerIds]);
         const sortedPlayers = playersRes.rows;
 
-        // 2. SADECE SEÇİLEN LİGDEKİ takımları çek (Şart EKLENDİ)
-        const teamsQuery = `SELECT id, name, power FROM teams WHERE is_active = TRUE AND league = $1 ORDER BY power ASC`;
+        // 2. Adım: SADECE SEÇİLEN LİGDEKİ tüm aktif takımları çek (Sıralama yapmadan)
+        const teamsQuery = `SELECT id, name, power FROM teams WHERE is_active = TRUE AND league = $1`;
         const teamsRes = await db.query(teamsQuery, [league]);
-        const sortedTeams = teamsRes.rows;
+        let availableTeams = teamsRes.rows;
 
-        if (sortedTeams.length < sortedPlayers.length) {
+        if (availableTeams.length < sortedPlayers.length) {
             return res.status(400).json({ error: `Bu kura için ${league} havuzunda yeterli aktif takım yok! Lütfen yeni takım ekleyin.` });
         }
 
-        // 3. Eşleştirme
+        // 3. Adım: Havuzdan oyuncu sayısı kadar RASTGELE takım seç
+        // Takım dizisini rastgele karıştırıyoruz ve ihtiyacımız olan kadarını kesip (slice) alıyoruz
+        const shuffledTeams = availableTeams.sort(() => 0.5 - Math.random());
+        const selectedRandomTeams = shuffledTeams.slice(0, sortedPlayers.length);
+
+        // 4. Adım: Seçilen bu rastgele N takımı GÜÇ SIRASINA göre sırala (ASC - Zayıftan Güçlüye)
+        const poolTeams = selectedRandomTeams.sort((a, b) => a.power - b.power);
+
+        // 5. Adım: Eşleştirme (En iyi oyuncuya, o anki havuzun en zayıf takımı denk gelecek)
         const matches = sortedPlayers.map((player, index) => {
             return {
                 playerName: player.name,
                 averageScore: parseFloat(player.avg_score).toFixed(2),
-                assignedTeam: sortedTeams[index].name,
-                teamPower: sortedTeams[index].power
+                assignedTeam: poolTeams[index].name,
+                teamPower: poolTeams[index].power
             };
         });
 
